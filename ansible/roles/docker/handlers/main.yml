@@ -1,0 +1,9 @@
+---
+- name: Mettre à jour le cache apt
+  ansible.builtin.apt:
+    update_cache: true
+
+- name: Redémarrer docker
+  ansible.builtin.service:
+    name: docker
+    state: restarted

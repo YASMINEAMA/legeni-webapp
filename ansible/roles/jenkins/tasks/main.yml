@@ -1,0 +1,36 @@
+---
+- name: Créer le dossier Jenkins
+  ansible.builtin.file:
+    path: "{{ jenkins_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Copier les fichiers de l'image Jenkins
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "{{ jenkins_dir }}/{{ item }}"
+    mode: "0644"
+  loop: [Dockerfile, docker-compose.yml, plugins.txt]
+
+- name: Lire le GID du groupe docker
+  ansible.builtin.getent:
+    database: group
+    key: docker
+
+- name: Générer le fichier .env
+  ansible.builtin.copy:
+    dest: "{{ jenkins_dir }}/.env"
+    mode: "0644"
+    content: "DOCKER_GID={{ ansible_facts['getent_group']['docker'][1] }}\n"
+
+- name: Construire et démarrer Jenkins
+  community.docker.docker_compose_v2:
+    project_src: "{{ jenkins_dir }}"
+    project_name: "{{ jenkins_project }}"
+    build: policy
+    state: present
+
+- name: Attendre que Jenkins réponde
+  ansible.builtin.wait_for:
+    port: "{{ jenkins_port }}"
+    timeout: 180
