@@ -1,0 +1,10 @@
+---
+- name: Provisionner la machine CI/CD (Docker, Minikube, Jenkins)
+  hosts: local
+  become: true
+  vars:
+    provision_user: "{{ lookup('env', 'USER') }}"
+  roles:
+    - docker
+    - minikube
+    - jenkins

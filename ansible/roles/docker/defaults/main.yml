@@ -1,0 +1,10 @@
+---
+docker_users:
+  - "{{ provision_user }}"
+docker_packages:
+  - docker-ce
+  - docker-ce-cli
+  - containerd.io
+  - docker-compose-plugin
+  - docker-buildx-plugin
+docker_key_path: /etc/apt/keyrings/docker.asc

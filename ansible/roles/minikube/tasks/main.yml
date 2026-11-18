@@ -1,0 +1,59 @@
+---
+- name: Installer les dépendances
+  ansible.builtin.apt:
+    name: [curl, socat, conntrack]
+    state: present
+
+- name: Chercher minikube
+  ansible.builtin.shell: command -v minikube
+  register: minikube_bin
+  changed_when: false
+  failed_when: false
+
+- name: Installer minikube s'il est absent
+  ansible.builtin.get_url:
+    url: "{{ minikube_url }}"
+    dest: /usr/local/bin/minikube
+    mode: "0755"
+    timeout: 300
+  when: minikube_bin.rc != 0
+
+- name: Chercher kubectl
+  ansible.builtin.shell: command -v kubectl
+  register: kubectl_bin
+  changed_when: false
+  failed_when: false
+
+- name: Installer kubectl s'il est absent
+  ansible.builtin.get_url:
+    url: "https://dl.k8s.io/release/{{ kubectl_version }}/bin/linux/amd64/kubectl"
+    dest: /usr/local/bin/kubectl
+    mode: "0755"
+    timeout: 300
+  when: kubectl_bin.rc != 0
+
+- name: Vérifier l'état du cluster
+  ansible.builtin.command: minikube status
+  become: false
+  register: minikube_status
+  changed_when: false
+  failed_when: false
+
+- name: Démarrer le cluster Minikube
+  ansible.builtin.command: >-
+    minikube start --driver={{ minikube_driver }}
+    --container-runtime={{ minikube_runtime }}
+  become: false
+  when: minikube_status.rc != 0
+
+- name: Lister les addons
+  ansible.builtin.command: minikube addons list -o json
+  become: false
+  register: minikube_addons_list
+  changed_when: false
+
+- name: Activer les addons manquants
+  ansible.builtin.command: "minikube addons enable {{ item }}"
+  become: false
+  loop: "{{ minikube_addons }}"
+  when: (minikube_addons_list.stdout | from_json)[item].Status != 'enabled'

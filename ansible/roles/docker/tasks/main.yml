@@ -1,0 +1,52 @@
+---
+- name: Installer les prérequis
+  ansible.builtin.apt:
+    name: [ca-certificates, curl, gnupg]
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Créer le dossier des clés APT
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+
+- name: Télécharger la clé GPG de Docker
+  ansible.builtin.get_url:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    dest: "{{ docker_key_path }}"
+    mode: "0644"
+
+- name: Déclarer le dépôt Docker
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/docker.list
+    mode: "0644"
+    content: >-
+      deb [arch={{ 'amd64' if ansible_facts['architecture'] == 'x86_64' else 'arm64' }}
+      signed-by={{ docker_key_path }}]
+      https://download.docker.com/linux/ubuntu
+      {{ ansible_facts['distribution_release'] }} stable
+  notify: Mettre à jour le cache apt
+
+- name: Appliquer le dépôt avant l'installation
+  ansible.builtin.meta: flush_handlers
+
+- name: Installer Docker
+  ansible.builtin.apt:
+    name: "{{ docker_packages }}"
+    state: present
+  notify: Redémarrer docker
+
+- name: Démarrer et activer Docker
+  ansible.builtin.service:
+    name: docker
+    state: started
+    enabled: true
+
+- name: Autoriser les utilisateurs à utiliser Docker
+  ansible.builtin.user:
+    name: "{{ item }}"
+    groups: docker
+    append: true
+  loop: "{{ docker_users }}"

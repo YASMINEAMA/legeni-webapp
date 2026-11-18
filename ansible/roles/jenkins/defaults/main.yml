@@ -1,0 +1,4 @@
+---
+jenkins_dir: /opt/jenkins
+jenkins_project: jenkins-docker
+jenkins_port: 8080
