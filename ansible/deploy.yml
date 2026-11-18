@@ -1,0 +1,122 @@
+---
+# Usage : ansible-playbook deploy.yml -e target_env=staging -e image_tag=1.0.0-1
+- name: Déployer l'application fil rouge sur Kubernetes
+  hosts: local
+  gather_facts: false
+  vars_files:
+    - vars/vault.yml
+  vars:
+    target_env: ""
+    image_repo: fabillama1/legeni-webapp
+    image_tag: 1.0.0-1
+    rollout_timeout: 180s
+    node_ports:
+      staging: 30081
+      prod: 30080
+    namespace: "legeni-{{ target_env }}"
+    kustomize_dir: "{{ playbook_dir }}/../k8s/overlays/{{ target_env }}"
+
+  tasks:
+    - name: Vérifier les paramètres
+      ansible.builtin.assert:
+        that:
+          - target_env in ['staging', 'prod']
+          - image_tag is match('^[0-9]+\\.[0-9]+\\.[0-9]+-[0-9]+$')
+        fail_msg: "Usage : -e target_env=staging|prod -e image_tag=<VERSION>-<build> (jamais latest)"
+
+    - name: Créer le namespace
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ namespace }}"
+            labels:
+              env: "{{ target_env }}"
+
+    - name: Créer ou mettre à jour le Secret Redis (depuis Vault)
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: redis-secret
+            namespace: "{{ namespace }}"
+          type: Opaque
+          data:
+            password: "{{ lookup('vars', 'vault_redis_password_' ~ target_env) | b64encode }}"
+      register: redis_secret
+      no_log: true
+
+    - name: Chercher un Redis déjà déployé
+      ansible.builtin.command: kubectl -n {{ namespace }} get statefulset redis
+      register: redis_exists
+      changed_when: false
+      failed_when: false
+
+    - name: Déploiement avec rollback automatique
+      block:
+        - name: Générer les manifests (Kustomize)
+          ansible.builtin.command: kubectl kustomize {{ kustomize_dir }}
+          register: rendered
+          changed_when: false
+
+        - name: Injecter le tag d'image et la version
+          ansible.builtin.set_fact:
+            manifests: >-
+              {{ rendered.stdout
+              | regex_replace('image: \\S*legeni-webapp:\\S+', 'image: ' ~ image_repo ~ ':' ~ image_tag)
+              | regex_replace('(name: APP_VERSION\\s+value: )\\S+', '\\1' ~ image_tag) }}
+
+        - name: Appliquer les manifests
+          kubernetes.core.k8s:
+            state: present
+            definition: "{{ manifests | from_yaml_all | list }}"
+
+        - name: Redémarrer Redis si son mot de passe a changé
+          ansible.builtin.command: kubectl -n {{ namespace }} rollout restart statefulset/redis
+          when: redis_secret.changed and redis_exists.rc == 0
+
+        - name: Attendre Redis
+          ansible.builtin.command: kubectl -n {{ namespace }} rollout status statefulset/redis --timeout={{ rollout_timeout }}
+          changed_when: false
+
+        - name: Redémarrer l'application si le mot de passe a changé
+          ansible.builtin.command: kubectl -n {{ namespace }} rollout restart deployment/webapp
+          when: redis_secret.changed and redis_exists.rc == 0
+
+        - name: Attendre la fin du rolling update
+          ansible.builtin.command: kubectl -n {{ namespace }} rollout status deployment/webapp --timeout={{ rollout_timeout }}
+          changed_when: false
+
+        - name: Adresse de Minikube
+          ansible.builtin.command: minikube ip
+          register: minikube_ip
+          changed_when: false
+
+        - name: Smoke test (version et environnement)
+          ansible.builtin.uri:
+            url: "http://{{ minikube_ip.stdout }}:{{ node_ports[target_env] }}/api/info"
+            return_content: true
+          register: smoke
+          until: >-
+            smoke.status | default(0) == 200
+            and smoke.json.version | default('') == image_tag
+            and smoke.json.env | default('') == target_env
+          retries: 10
+          delay: 3
+          changed_when: false
+
+      rescue:
+        - name: Rollback automatique
+          ansible.builtin.command: kubectl -n {{ namespace }} rollout undo deployment/webapp
+
+        - name: Attendre le retour à l'état stable
+          ansible.builtin.command: kubectl -n {{ namespace }} rollout status deployment/webapp --timeout=180s
+          changed_when: false
+
+        - name: Signaler l'échec
+          ansible.builtin.fail:
+            msg: "Déploiement {{ image_tag }} en {{ target_env }} échoué : rollback effectué"
